@@ -1,0 +1,687 @@
+---
+title: "QA/QC Report"
+output:
+  html_document: default
+---
+
+```{r loadpackages, include=FALSE}
+library(prettydoc)
+library(dplyr)
+library(leaflet)
+library(RColorBrewer)
+library(ggplot2)
+library(rmarkdown)
+library(knitr)
+library(data.table)
+library(formattable)
+library(tidyverse)
+library(obistools)
+library(rgbif)
+library(marmap)
+library(tidyr)
+library(sp)
+library(robis)
+library(leaflet)
+library(leaflet.esri)
+library(kableExtra)
+library(raster)
+library(maptools)
+library(maps)
+library(ggmap)
+```
+
+```{r loadfiles, echo=FALSE}
+# Set working directory and read in dataset
+setwd("C:/Users/elizabeth.gugliotti/Desktop/ERDAP")
+indata<-read.csv("EX1806.csv",header=TRUE)
+```
+##QA/QC of position & depth
+
+### Look for major positional errors
+
+**Latitude**  
+Mean: `r mean(indata$Latitude)`  
+Maximum: `r max(indata$Latitude)`  
+Minimum: `r min(indata$Latitude)`  
+*No glaring latitude errors according to max and min*
+
+**Longitude**  
+Mean: `r mean(indata$Longitude)`  
+Maximum: `r max(indata$Longitude)`  
+Minimum: `r min(indata$Longitude)`  
+*No glaring longitude errors according to max and min*
+
+```{r CalculateError, echo=FALSE}
+# Mean +/- sd of longitude
+a<-mean(indata$Longitude)+ 2*sd(indata$Longitude)
+b<-mean(indata$Longitude)- 2*sd(indata$Longitude)
+
+# Mean +/- sd of latitude
+c<-mean(indata$Latitude)+ 2*sd(indata$Latitude)
+d<-mean(indata$Latitude)- 2*sd(indata$Latitude)
+```
+
+```{r LongitudeError, echo=FALSE}
+errors.long<- indata %>% 
+  filter (Longitude > a | Longitude < b) %>%
+  select(1,3,6:12)
+#formattable(errors.long, align=c("l","l","c","c","c","c","c","r"), list(`SampleID` = formatter("span", style = ~ style(color = "black",font.weight = "bold")),`Longitude`= formatter("span", style = ~ style(color = "red", font.weight = "bold"))))
+```
+
+```{r LatitudeError, echo=FALSE}
+errors.lat<- indata %>% 
+  filter (Latitude > c | Latitude < d) %>%
+  select(1,3,6:12)
+#formattable(errors.lat, align=c("l","l","c","c","c","c","c","r"), list(`SampleID` = formatter("span", style = ~ style(color = "black",font.weight = "bold")),`Latitude`= formatter("span", style = ~ style(color = "red", font.weight = "bold"))))
+```
+
+Static map to visualize dive locations and highlight any glaring positional issues.
+```{r StaticMap, echo=FALSE, warning=FALSE, message=FALSE}
+gis<-indata
+coordinates(gis) <- c("Longitude", "Latitude", "DepthInMeters")
+proj4string(gis) <- "+proj=longlat +ellps=WGS84 +datum=WGS84"
+x<-bbox(gis)
+zoom <- 2 # as number gets bigger you achieve a wider extent to your download
+cont <- getNOAA.bathy(lon1 = x[1,1]-zoom, lon2 = x[1,2]+zoom,
+                      lat1 = x[2,1]-zoom, lat2 = x[2,2]+zoom, resolution = 5,
+                      keep = FALSE, antimeridian = FALSE)
+# topographical color scale, see ?scale_fill_etopo
+g <- autoplot(cont, geom=c("raster", "contour")) +
+  scale_fill_gradient2(low="dodgerblue4", mid="gainsboro", high="darkgreen") +
+  labs(x = 'Longitude') +
+  labs(y = 'Latitude')
+# add sampling locations
+g + geom_point(aes(x=Longitude, y=Latitude), data=indata, alpha=0.5, color = 'red', size = 2)
+```
+
+
+### Interactive Map of Dive Lines & Occurrences (to check for finer scale positional errors)
+The dive tracks are pulled directly from NCEI online (no csv was downloaded to plot the dive tracks). Your observation points are overlaid on those divelines
+
+**Instructions**  
+
+Zoom in to points to see if they fall on the diveline. If they don't, you can click on the point and a pop-up will appear that shows you the Dive, ScientificName, SampleID, Latitude, and Longitude so that you can go to the observation in your excel sheet and then see if there are changes that need to be made.
+
+You will have to go on SeaTube to get correct positional data for your observations. The positional data very well could be correct yet might look off on the map because of differences in the navigation data or numerous other issues that aren't on us. Many depth errors stem from small latitude/longitude errors so making sure that these correct will be important downstream in this document when the depths are checked.
+```{r NCEIDiveLines_Map, echo=FALSE, message = FALSE, warning=FALSE}
+pal<-colorFactor(palette = c("green","red","blue","purple","pink","orange","yellow","white","black","navy","cyan","coral","darkgreen","darkred"), domain=indata$EventID)
+
+leaflet(options=leafletOptions(maxZoom=25)) %>% 
+  addEsriBasemapLayer(esriBasemapLayers$Gray) %>% 
+  addEsriFeatureLayer(
+  url = "https://service.ncddc.noaa.gov/arcgis/rest/services/OceanExploration/OE_OkeanosDives/MapServer/65", markerType ="marker") %>%
+  addCircleMarkers(data=indata,
+                   lat=indata$Latitude,
+                   lng=indata$Longitude,
+                   color=~pal(indata$EventID),
+                   popup=paste("Dive:",indata$EventID,"<br>",
+                               "ScientificName:",indata$ScientificName,"<br>",
+                               "SampleID:",indata$SampleID,"<br>",
+                               "Latitude:",indata$Latitude,"<br>",
+                               "Longitude:",indata$Longitude)) %>%
+  addLegend("bottomright",pal=pal, values=indata$EventID,
+            title="Dives",
+            opacity=1)
+```
+
+### Interactive Map Showing Annotations > 20 m Off The Dive Track
+A 20 m buffer was created around each dive track and then a test was run to determine if any points from your data fall outside of this buffer. Only points that fall outside of this buffer are shown on the map in red. 
+
+**Instructions**  
+
+Zoom in to each of those points and click on them to see the information for that point so that you can go into your spreadsheet and find the annotation. You will likely have to go on seatube to double check that the positional data is correct.
+```{r InsideBuffer, echo = FALSE}
+# This code is to create a 20 m buffer from the line from esri and see if the points from indata fall in this buff
+
+# Need this package to turn the esri line into an sf dataframe
+devtools::install_github("yonghah/esri2sf")
+library("esri2sf")
+library(sf)
+url<-"https://service.ncddc.noaa.gov/arcgis/rest/services/OceanExploration/OE_OkeanosDives/MapServer/65"
+df<-esri2sf(url)
+#st_crs(df)
+
+# transform to UTM zone 18
+df.utm<-st_transform(df, "+proj=utm +zone=18 +ellps=GRS80 +datum=NAD83")
+#st_crs(df.utm)
+
+# Create 20 m buffer
+buf<-st_buffer(df.utm, dist=20)
+
+# Turn buffer back into WGS84
+buf.wgs<-st_transform(buf, "+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+indatadf<-data.frame(indata)
+
+# by dive
+# Dive 1
+buf.wgs1<- buf.wgs[buf.wgs$dive=="DIVE01",] # select buffer for dive 1
+indatadf1<- indatadf %>%
+  dplyr::filter(EventID=="Dive01") # select indata for dive 1
+
+indata_sf1<-st_as_sf(x=indatadf1, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs)) # make indata as sf class using buf.wgs (which is WGS 84) as crs
+
+pnts1<-st_within(indata_sf1, buf.wgs1, sparse=FALSE) # check if points in indata_sf1 fall in the dive 1 buffer, returns matrix of TRUE/FALSE values
+pnts1<-data.frame(pnts1) # make as dataframe
+pnts1['EventID']="Dive01"
+pnts1<-pnts1 %>%
+  rename(InsideBuffer=pnts1)
+
+# Dive 2
+buf.wgs2<- buf.wgs[buf.wgs$dive=="DIVE02",]
+indatadf2<- indatadf %>%
+  dplyr::filter(EventID=="Dive02")
+
+indata_sf2<-st_as_sf(x=indatadf2, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts2<-st_within(indata_sf2, buf.wgs2, sparse=FALSE)
+pnts2<-data.frame(pnts2)
+pnts2['EventID']="Dive02"
+pnts2<-pnts2 %>%
+  rename(InsideBuffer=pnts2)
+
+# Dive 3
+buf.wgs3<- buf.wgs[buf.wgs$dive=="DIVE03",]
+indatadf3<- indatadf %>%
+  dplyr::filter(EventID=="Dive03")
+
+indata_sf3<-st_as_sf(x=indatadf3, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts3<-st_within(indata_sf3, buf.wgs3, sparse=FALSE)
+pnts3<-data.frame(pnts3)
+pnts3['EventID']="Dive03"
+pnts3<-pnts3 %>%
+  rename(InsideBuffer=pnts3)
+
+# Dive 4
+buf.wgs4<- buf.wgs[buf.wgs$dive=="DIVE04",]
+indatadf4<- indatadf %>%
+  dplyr::filter(EventID=="Dive04")
+
+indata_sf4<-st_as_sf(x=indatadf4, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts4<-st_within(indata_sf4, buf.wgs4, sparse=FALSE)
+pnts4<-data.frame(pnts4)
+pnts4['EventID']="Dive04"
+pnts4<-pnts4 %>%
+  rename(InsideBuffer=pnts4)
+
+# Dive 5
+buf.wgs5<- buf.wgs[buf.wgs$dive=="DIVE05",]
+indatadf5<- indatadf %>%
+  dplyr::filter(EventID=="Dive05")
+
+indata_sf5<-st_as_sf(x=indatadf5, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts5<-st_within(indata_sf5, buf.wgs5, sparse=FALSE)
+pnts5<-data.frame(pnts5)
+pnts5['EventID']="Dive05"
+pnts5<-pnts5 %>%
+  rename(InsideBuffer=pnts5)
+
+# Dive 6
+buf.wgs6<- buf.wgs[buf.wgs$dive=="DIVE06",]
+indatadf6<- indatadf %>%
+  dplyr::filter(EventID=="Dive06")
+
+indata_sf6<-st_as_sf(x=indatadf6, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts6<-st_within(indata_sf6, buf.wgs6, sparse=FALSE)
+pnts6<-data.frame(pnts6)
+pnts6['EventID']="Dive06"
+pnts6<-pnts6 %>%
+  rename(InsideBuffer=pnts6)
+
+# Dive 7
+buf.wgs7<- buf.wgs[buf.wgs$dive=="DIVE07",]
+indatadf7<- indatadf %>%
+  dplyr::filter(EventID=="Dive07")
+
+indata_sf7<-st_as_sf(x=indatadf7, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts7<-st_within(indata_sf7, buf.wgs7, sparse=FALSE)
+pnts7<-data.frame(pnts7)
+pnts7['EventID']="Dive07"
+pnts7<-pnts7 %>%
+  rename(InsideBuffer=pnts7)
+
+# Dive 8
+buf.wgs8<- buf.wgs[buf.wgs$dive=="DIVE08",]
+indatadf8<- indatadf %>%
+  dplyr::filter(EventID=="Dive08")
+
+indata_sf8<-st_as_sf(x=indatadf8, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts8<-st_within(indata_sf8, buf.wgs8, sparse=FALSE)
+pnts8<-data.frame(pnts8)
+pnts8['EventID']="Dive08"
+pnts8<-pnts8 %>%
+  rename(InsideBuffer=pnts8)
+
+# No Dive 9
+
+# Dive 10
+buf.wgs10<- buf.wgs[buf.wgs$dive=="DIVE10",]
+indatadf10<- indatadf %>%
+  dplyr::filter(EventID=="Dive10")
+
+indata_sf10<-st_as_sf(x=indatadf10, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts10<-st_within(indata_sf10, buf.wgs10, sparse=FALSE)
+pnts10<-data.frame(pnts10)
+pnts10['EventID']="Dive10"
+pnts10<-pnts10 %>%
+  rename(InsideBuffer=pnts10)
+
+# Dive 11
+buf.wgs11<- buf.wgs[buf.wgs$dive=="DIVE11",]
+indatadf11<- indatadf %>%
+  dplyr::filter(EventID=="Dive11")
+
+indata_sf11<-st_as_sf(x=indatadf11, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts11<-st_within(indata_sf11, buf.wgs11, sparse=FALSE)
+pnts11<-data.frame(pnts11)
+pnts11['EventID']="Dive11"
+pnts11<-pnts11 %>%
+  rename(InsideBuffer=pnts11)
+
+# Dive 12
+buf.wgs12<- buf.wgs[buf.wgs$dive=="DIVE12",]
+indatadf12<- indatadf %>%
+  dplyr::filter(EventID=="Dive12")
+
+indata_sf12<-st_as_sf(x=indatadf12, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts12<-st_within(indata_sf12, buf.wgs12, sparse=FALSE)
+pnts12<-data.frame(pnts12)
+pnts12['EventID']="Dive12"
+pnts12<-pnts12 %>%
+  rename(InsideBuffer=pnts12)
+
+# Dive 13
+buf.wgs13<- buf.wgs[buf.wgs$dive=="DIVE13",]
+indatadf13<- indatadf %>%
+  dplyr::filter(EventID=="Dive13")
+
+indata_sf13<-st_as_sf(x=indatadf13, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts13<-st_within(indata_sf13, buf.wgs13, sparse=FALSE)
+pnts13<-data.frame(pnts13)
+pnts13['EventID']="Dive13"
+pnts13<-pnts13 %>%
+  rename(InsideBuffer=pnts13)
+
+# No Dive 14
+
+# Dive 15
+buf.wgs15<- buf.wgs[buf.wgs$dive=="DIVE15",]
+indatadf15<- indatadf %>%
+  dplyr::filter(EventID=="Dive15")
+
+indata_sf15<-st_as_sf(x=indatadf15, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts15<-st_within(indata_sf15, buf.wgs15, sparse=FALSE)
+pnts15<-data.frame(pnts15)
+pnts15['EventID']="Dive15"
+pnts15<-pnts15 %>%
+  rename(InsideBuffer=pnts15)
+
+# No Dive 16
+
+# Dive 17
+buf.wgs17<- buf.wgs[buf.wgs$dive=="DIVE17",]
+indatadf17<- indatadf %>%
+  dplyr::filter(EventID=="Dive17")
+
+indata_sf17<-st_as_sf(x=indatadf17, coords = c("Longitude", "Latitude"), crs=st_crs(buf.wgs))
+
+pnts17<-st_within(indata_sf17, buf.wgs17, sparse=FALSE)
+pnts17<-data.frame(pnts17)
+pnts17['EventID']="Dive17"
+pnts17<-pnts17 %>%
+  rename(InsideBuffer=pnts17)
+
+# combine all dataframes for each dive into one
+allpnts<-do.call("rbind",list(pnts1,pnts2,pnts3,pnts4,pnts5,pnts6,pnts7,pnts8,pnts10,pnts11,pnts12,pnts13,pnts15,pnts17))
+indata$EventID<-as.character(indata$EventID)
+indataBuffer<-cbind(indata, allpnts$InsideBuffer)
+indataBuffer<- indataBuffer %>%
+  filter(allpnts$InsideBuffer==FALSE)
+
+
+# Map to visualize points outside 20 m buffer
+leaflet(options=leafletOptions(maxZoom=25)) %>% 
+  addEsriBasemapLayer(esriBasemapLayers$Gray) %>% 
+  addEsriFeatureLayer(
+  url = "https://service.ncddc.noaa.gov/arcgis/rest/services/OceanExploration/OE_OkeanosDives/MapServer/65",markerType ="marker") %>%
+  addPolygons(data=buf.wgs, color = "black", fillOpacity =0.1) %>%
+  addCircleMarkers(data=indataBuffer,
+                   lat=indataBuffer$Latitude,
+                   lng=indataBuffer$Longitude,
+                   color="red",
+                   popup=paste("Dive:",indataBuffer$EventID,"<br>",
+                               "ScientificName:",indataBuffer$ScientificName,"<br>",
+                               "SampleID:",indataBuffer$SampleID,"<br>",
+                               "Latitude:",indataBuffer$Latitude,"<br>",
+                               "Longitude:",indataBuffer$Longitude))
+```
+
+
+
+### Depth check
+Taxa are matched with the World Register of Marine Species (WoRMS) list and checks depths against bathymetery values using the `obistools` package
+```{r Obis, echo = FALSE, message=FALSE, warning=FALSE}
+#match taxa with obis list
+mt<-match_taxa(indata$ScientificName, ask=FALSE)
+
+#rename indata with indata as obisdata
+obisdata<-indata
+obisdata$scientificNameID<-mt$scientificNameID
+obisdata$decimalLatitude<-obisdata$Latitude
+obisdata$decimalLongitude<-obisdata$Longitude
+obisdata$minimumDepthInMeters<-obisdata$DepthInMeters
+obisdata$maximumDepthInMeters<-obisdata$DepthInMeters
+```
+
+*Only those that have error of $\ge$ 10% (could be depth or could be lat/long errors)*
+
+**Instructions**
+As with the map before, you may zoom in and click on circle markers to view a popup of the data properties that will allow you to find the annotation based on the SampleID. The popup also has the depth recorded for the annotation and the depth according OBIS's methods:
+
+*OBIS uses geospatial data (EEZ, IHO and Marine World Heritage Site shapes) from Marine Regions. IHO geometries are used to create basin geometries, which are then intersected with EEZs in order to calculate basin specific country statistics. IHO and EEZ shapes arealso used to create ABNJ geometries. A 20 km inland buffer is added to EEZ shapes to correct for coastline inaccuracies. The Ecologically or Biologically Significant Areas (EBSA) shapes were provided by the Duke University Marine geospatial Ecology Lab.*
+```{r ProblemsMap, echo = FALSE}
+#Produce dataframe that shows depth errors of >10%
+problems<-check_depth(obisdata, depthmargin = 1)
+problems$bathymetry <- lookup_xy(problems, shoredistance = FALSE, grids = TRUE, areas = FALSE)$bathymetry
+problems$depthpcent<-(abs(problems$bathymetry-problems$DepthInMeters)/problems$bathymetry)*100
+problems<-problems %>%
+  dplyr::filter(depthpcent>10)
+problems$DepthDiff<-abs(problems$bathymetry-problems$DepthInMeters)
+
+
+#Produce map that shows depth errors of >10%
+leaflet(options=leafletOptions(maxZoom=25)) %>% 
+  addEsriBasemapLayer(esriBasemapLayers$Oceans) %>% 
+  addCircleMarkers(data=problems,
+                   lat=problems$Latitude,
+                   lng=problems$Longitude,
+                   color="red",
+                   popup=paste("Dive:",problems$EventID,"<br>",
+                               "ScientificName:",problems$ScientificName,"<br>",
+                               "SampleID:",problems$SampleID,"<br>",
+                               "Depth:",problems$DepthInMeters,"<br>",
+                               "CRM Depth:",problems$bathymetry,"<br>",
+                               "Depth Difference:", problems$DepthDiff,"<br>",
+                               "Latitude:",problems$Latitude,"<br>",
+                               "Longitude:",problems$Longitude))
+```
+
+
+#### ETOPO1 raster from NCEI was used to determine if 
+```{r ETOPO, echo=FALSE}
+minLon <- -78
+maxLon <- -74
+minLat <- 29
+maxLat <- 37
+##### get ETOPO1 data from NCEI #####
+url <- paste("http://maps.ngdc.noaa.gov/mapviewer-support/wcs-proxy/",
+             "wcs.groovy?filename=etopo1_bedrock.tif&",
+             "request=getcoverage&version=1.0.0&service=wcs&",
+             "coverage=etopo1_bedrock&CRS=EPSG:4326&format=geotiff&",
+             "resx=0.000833333333333334&resy=0.000833333333333334&bbox=",
+             minLon, ",", minLat, ",", maxLon, ",", maxLat, sep="")
+fname <- "etopo_test.tif"
+download.file(url, fname, mode="wb", cacheOK="false")
+etopo <- raster(fname)
+# filtering the coral data to match elevation data extraction
+
+#View(filt)
+filt<-indata
+coordinates(filt) <- c("Longitude","Latitude")
+proj4string(filt) <- proj4string(etopo)
+
+# extract ETOPO data to points
+filt$gisETOPO <- raster::extract(etopo, filt)
+
+# changing the sign of the depth to match schema directions
+filt$gisETOPO <- filt$gisETOPO * -1
+
+##### setting thresholds for difference and creating flags
+perother <- 60
+#finding depth difference
+indata$gisETOPO<-filt$gisETOPO
+indata$EtopoDepthDiff<-abs(indata$DepthInMeters-indata$gisETOPO)
+
+
+flagEtopo<- indata %>%
+  filter(EtopoDepthPDiff > perother)
+
+#  use etopo1 raster in leaflet to map problems
+pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(etopo))
+
+leaflet() %>% addTiles() %>%
+  addRasterImage(etopo, color = pal, opacity = 0.8) %>%
+  addCircleMarkers(data=flagEtopo,
+                   lat=flagEtopo$Latitude,
+                   lng=flagEtopo$Longitude,
+                   color="red",
+                   popup=paste("Dive:",flagEtopo$EventID,"<br>",
+                               "ScientificName:",flagEtopo$ScientificName,"<br>",
+                               "SampleID:",flagEtopo$SampleID,"<br>",
+                               "Depth:",flagEtopo$DepthInMeters,"<br>",
+                               "CRM Depth:",flagEtopo$bathymetry,"<br>",
+                               "Latitude:",flagEtopo$Latitude,"<br>",
+                               "Longitude:",flagEtopo$Longitude))
+```
+
+## Smithsonian USNM Number & Species Name Check
+This pulls records from Smithsonian using the `rgbif` package. 
+
+**Instructions**  
+
+The first table contains the coral and sponge records from the Smithsonian so that you can check your records in the second table with theirs. This will allow you to see the OER ID/SampleID , and the USNM number. You will also be able to see if the specimen has been given a better ID by the Smithsonian since it was collected. If there have been updates to the identification of the specimen, you will need to make these changes in your data sheet.
+```{r PullSmithsonianData, echo=FALSE, warning=FALSE, message=FALSE}
+# This is all backend stuff
+# This pulls the smithsonian data and makes a data frame
+x<-occ_search(institutionCode = "USNM", year=2018)
+y<-data.frame(x$data)
+
+# This filters to the cruise, pulls just cnidarians and sponges, and filters out non coral records
+y<-y %>% filter(grepl("EX1806",recordNumber), phylum %in% c("Cnidaria","Porifera"))
+y$recordNumber<-substr(y$recordNumber,24,46)
+y<-y %>% filter(scientificName != "Actiniaria")
+y<-y %>% filter(scientificName != "Hydrozoa")
+y<-y %>% filter(scientificName != "Corallimorpharia")
+
+# This creates a variable called USNM, selects only some of the variables, and renames some of the column names
+USNM<-y %>% 
+  select(recordNumber, catalogNumber, scientificName, acceptedScientificName, phylum, class, order, family, genus, species, taxonRank, depth, decimalLatitude, decimalLongitude,locality, verbatimEventDate)%>%
+  rename(SampleID=recordNumber, USNMNumber=catalogNumber)
+```
+
+
+```{r YourSpecimenRecords, echo=FALSE}
+# This creates a variable named "check" that is just values with D2 in the SampleID field
+check<- indata %>% filter(grepl("D2",SampleID))
+check$SampleID<-as.character(check$SampleID)
+
+# Not all of my values are in the right format and so this manipulates those values so that they are in the right format to be compared to the USNM list
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive06_Spec03Bio"), "D2_DIVE06_SPEC03BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive07_Spec01Bio"), "D2_DIVE07_SPEC01BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive08_Spec03Bio"), "D2_DIVE08_SPEC03BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive11_Spec03Bio"), "D2_DIVE11_SPEC03BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive11_spec04BIO"), "D2_DIVE11_SPEC04BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive12_SPEC03BIO"), "D2_DIVE12_SPEC03BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive12_spec02BIO"), "D2_DIVE12_SPEC02BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive13_SPEC01BIO"), "D2_DIVE13_SPEC01BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive13_SPEC02BIO"), "D2_DIVE13_SPEC02BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive13_spec03BIO"), "D2_DIVE13_SPEC03BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive14_SPEC01BIO"), "D2_DIVE14_SPEC01BIO"))
+check<-
+  check %>%
+  mutate(SampleID=replace(SampleID, which(SampleID=="D2_Dive14_SPEC04BIO"), "D2_DIVE14_SPEC04BIO"))
+```
+
+
+
+```{r MatchNoMatch, echo=FALSE}
+# Match USNM to your table
+check.match <- check[match(USNM$SampleID, check$SampleID),]
+check.match <-check.match %>%
+  filter(!is.na(SampleID))
+
+# Match your table to USNM table
+USNM.match <- USNM[match(check$SampleID,USNM$SampleID),]
+USNM.match <- USNM.match %>%
+  filter(!is.na(SampleID))
+```
+
+This is a table that shows where your annotations SampleID **matches** the Smithsonian SampleID, the USNM Number, and the taxonomy that the Smithsonian has for it.  
+**Make sure that your ScientificName and any other taxonomic information is updated to what the Smithsonian has**  
+**Also make sure that you replace the SampleID with the USNM number and put the OER Sample string in the column that Tom wants**
+
+#### Records with matches
+```{r MatchTable, echo=FALSE}
+# Merge and make table for matches
+all.match<-full_join(check.match, USNM.match, by= "SampleID")
+all.match<- all.match %>%
+  select(SampleID, USNMNumber, ScientificName, scientificName,acceptedScientificName,phylum,order,family,genus,species,Latitude,Longitude,DepthInMeters,Locality,ObservationDate,ObservationTime) %>%
+  rename(YourScientificName=ScientificName, USNMScientificName=scientificName)
+kable(all.match) %>%
+  kable_styling(full_width =F)
+```
+
+#### Your data without matches
+
+This is a table that shows your data where there are **not** matches in the Smithsonian database.  
+
+*You should pay attention to the next table which shows the Smithsonian records don't have matches in your data. Look for any matches that weren't detected because of naming scheme differences and then make changes in your dataset accordingly*.
+
+```{r DataNomatch, echo=FALSE}
+# Table for your data where there is no USNM match
+check.nomatch<-subset(check, !(SampleID %in% USNM$SampleID))
+kable(check.nomatch, row.names=NA) %>%
+  kable_styling(full_width =F)
+```
+
+#### Smithsonian data without matches
+```{r USNMNomatch, echo=FALSE}
+# Table for USNM data where there is no match in your data
+USNM.nomatch<-subset(USNM, !(SampleID %in% check$SampleID))
+kable(USNM.nomatch, row.names=NA) %>%
+  kable_styling(full_width =F)
+```
+
+
+## Check coral records against Hourigan et al. (2017) regional published species list depth ranges
+
+This is not possible for sponges since the DSCRTP site does not have a published species list for sponges. So the indata must be filtered to have just corals.This list is then compared to the master taxon list created above to make sure that there are no mismatches in names in your records. If there are, these records will need to be moved up in taxonomic level so that the depths can be checked. Since we are using the PUBLISHED list, there is no way around this.
+```{r PublishedList, echo = FALSE}
+#bring in SEDCI published species list
+dir.proj <- file.path('C:', 'Users', 'elizabeth.gugliotti', 'Desktop','ERDAP')
+source(file.path(dir.proj, 'SEDCI.R'))
+```
+
+```{r, echo = FALSE}
+sponges<-indata %>%
+  filter(VernacularNameCategory %in% c("demosponge","glass sponge","sponge (unspecified)"))
+corals<- indata %>%
+  filter(!VernacularNameCategory %in% c("demosponge","glass sponge","sponge (unspecified)"))
+
+test<-setdiff(corals$ScientificName, masterTaxon$ScientificName)
+#these aren't present in the published species list so for the sake of testing, they will need to be renamed.
+
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Duva florida"), "Nephtheidae")) #not present in masterTaxon list
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Pennatula sp."), "Pennatulacea"))
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Distichoptilum sp."), "Pennatulacea"))
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Pseudoanthomastus sp."), "Alcyoniidae"))
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Isidella sp."), "Isididae"))
+corals<-
+  corals %>%
+  mutate(ScientificName=replace(ScientificName, which(ScientificName=="Stauropathes sp."), "Antipatharia"))
+
+
+#test again
+test<-setdiff(corals$ScientificName, masterTaxon$ScientificName)
+```
+
+
+This section checks the depths of your records with the published depth minimum and maximums from Hourigan et al. 2017. A table is produced ONLY for records that was either shallower than the published minimum or deeper than the published maximum.
+
+**This table tells you NOT that your depths are wrong, just that they are under or over the published depths.**
+
+**All this means is that you should double check your dataset using the SampleID as reference to make sure that you have the correct identification and the correct depth based on the navigation.**
+
+#### Depth Flag
+```{r DepthCheck, echo=FALSE}
+corals$index <- seq(1:length(corals$ScientificName))
+
+df <- data.frame(ScientificName = character(),
+                 index = numeric(),
+                 ShallowTest = character(),
+                 DeepTest = character(),
+                 Depth = numeric(),
+                 stringsAsFactors=FALSE)
+
+for (id in corals$index){
+  x <- corals %>% filter(index == id)
+  y <- masterTaxon %>% filter(ScientificName == x$ScientificName)
+  z <- x$DepthInMeters > y$MinDepth # if this is true and
+  r <- x$DepthInMeters < y$MaxDepth # this is true, then all is good
+  d <- data.frame(ScientificName=x$ScientificName,
+                  index = x$index,
+                  ShallowTest = z,
+                  DeepTest = r,
+                  Depth = x$DepthInMeters,
+                  record = x$SampleID,
+                  stringsAsFactors=FALSE)
+  df <- rbind(df, d)
+}
+df<- df %>%
+  filter(ShallowTest==FALSE | DeepTest==FALSE) %>%
+  select(ScientificName, ShallowTest, DeepTest, Depth, record)
+formattable(df)
+```
+
+### Quick summary of records by ScientificName
+```{r summaryByTaxa, echo=FALSE}
+sum_tbl<-
+  indata %>%
+  group_by(ScientificName) %>%
+  summarize (VernacularNameCategory= paste(unique(VernacularNameCategory), collapse = " | "),
+             Records = n())
+formattable(sum_tbl)
+```
