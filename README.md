@@ -8,4 +8,5 @@ While much of the code can be easily copied and pasted to QA/QC any EX dive, the
 
 Instructions:
 1. Download the QA/QC.Rmd
-2. Download the SEDCI
+2. Download the SEDCI.R file
+3. Go to https://download.gebco.net/ and download the GEBCO 2019 2D netCDF within the boundaries (latitude and longitude) or your expedition.
